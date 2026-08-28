@@ -1,0 +1,43 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    base64 (0.3.0)
+    bigdecimal (4.1.2-java)
+    jdbc-postgres (42.7.11)
+    json (2.21.2-java)
+    logger (1.7.0)
+    mustermann (3.1.1)
+    nio4r (2.7.5-java)
+    puma (6.6.1-java)
+      nio4r (~> 2.0)
+    rack (3.2.7)
+    rack-protection (4.2.1)
+      base64 (>= 0.1.0)
+      logger (>= 1.6.0)
+      rack (>= 3.0.0, < 4)
+    rack-session (2.1.2)
+      base64 (>= 0.1.0)
+      rack (>= 3.0.0)
+    sequel (5.107.0)
+      bigdecimal
+    sinatra (4.2.1)
+      logger (>= 1.6.0)
+      mustermann (~> 3.0)
+      rack (>= 3.0.0, < 4)
+      rack-protection (= 4.2.1)
+      rack-session (>= 2.0.0, < 3)
+      tilt (~> 2.0)
+    tilt (2.9.0)
+
+PLATFORMS
+  universal-java-26
+
+DEPENDENCIES
+  jdbc-postgres
+  json (~> 2.7)
+  puma (~> 6.4)
+  sequel (~> 5.84)
+  sinatra (~> 4.0)
+
+BUNDLED WITH
+   2.6.9
