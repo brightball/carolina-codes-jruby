@@ -1,0 +1,5 @@
+[tools]
+java = "21"
+# Install JRuby separately if this environment does not provide it:
+#   mise install jruby
+#   mise use jruby@9.4
