@@ -88,16 +88,8 @@ get %r{/v1/speakers/(\d{4})/([^/]+)} do |year, slug|
   speaker = DB[:v1_speakers].where(slug: slug).first
   halt 404, JSON.generate(error: "not_found") unless speaker
 
-  talks = DB[:v1_talks].where(speaker_slug: slug, year: year).all
-  halt 404, JSON.generate(error: "not_found") if talks.empty?
-
-  years = DB[:v1_talks].where(speaker_slug: slug).select_map(:year).uniq.sort.reverse
-  payload = stringify_keys(speaker).merge(
-    "year" => year,
-    "years" => years,
-    "other_years" => years.reject { |y| y == year },
-    "talks" => talks.map { |t| stringify_keys(t) }
-  )
+  payload = speaker_with_year(speaker, year)
+  halt 404, JSON.generate(error: "not_found") if payload["talks"].empty?
   JSON.generate(data: payload)
 end
 
@@ -151,18 +143,47 @@ end
 def year_speakers(year)
   slugs = DB[:v1_talks].where(year: year).select_map(:speaker_slug).uniq
   speakers = DB[:v1_speakers].where(slug: slugs).order(:last_name, :first_name).all
-  speakers.map do |speaker|
-    talks = DB[:v1_talks].where(speaker_slug: speaker[:slug], year: year).all
-    stringify_keys(speaker).merge(
-      "year" => year,
-      "talks" => talks.map { |t| stringify_keys(t) }
-    )
+  speakers.map { |speaker| speaker_with_year(speaker, year) }
+end
+
+def speaker_with_year(speaker, year)
+  slug = speaker[:slug] || speaker["slug"]
+  talks = DB[:v1_talks].where(speaker_slug: slug, year: year).all.map { |t| stringify_keys(t) }
+  years = DB[:v1_talks].where(speaker_slug: slug).select_map(:year).uniq.sort.reverse
+  stringify_keys(speaker).merge(
+    "year" => year,
+    "years" => years,
+    "other_years" => years.reject { |y| y == year },
+    "talks" => talks,
+    "languages" => unique_tags(talks, "languages"),
+    "topics" => unique_tags(talks, "topics")
+  )
+end
+
+def unique_tags(talks, key)
+  talks.flat_map { |talk| pg_text_array(talk[key]) }.uniq
+end
+
+def pg_text_array(value)
+  case value
+  when nil
+    []
+  when Array
+    value.map(&:to_s).reject(&:empty?)
+  when String
+    stripped = value.strip
+    return [] if stripped.empty? || stripped == "{}"
+    inner = stripped.start_with?("{") && stripped.end_with?("}") ? stripped[1..-2] : stripped
+    inner.split(",").map { |part| part.gsub(/\A"|"\z/, "").strip }.reject(&:empty?)
+  else
+    Array(value).map(&:to_s).reject(&:empty?)
   end
 end
 
 def stringify_keys(row)
   row.each_with_object({}) do |(key, value), acc|
-    acc[key.to_s] = value
+    name = key.to_s
+    acc[name] = %w[languages topics].include?(name) ? pg_text_array(value) : value
   end
 end
 
