@@ -30,6 +30,7 @@ GEM
     tilt (2.9.0)
 
 PLATFORMS
+  universal-java-21
   universal-java-26
 
 DEPENDENCIES

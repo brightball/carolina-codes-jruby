@@ -7,4 +7,4 @@ COPY . .
 
 ENV PORT=8080
 EXPOSE 8080
-CMD ["bundle", "exec", "puma", "-p", "8080", "config.ru"]
+CMD ["bundle", "exec", "puma", "config.ru"]
