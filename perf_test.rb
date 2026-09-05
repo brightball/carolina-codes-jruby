@@ -31,16 +31,28 @@ end
 src = File.read(File.expand_path("app.rb", __dir__))
 puma = File.read(File.expand_path("config/puma.rb", __dir__))
 dockerfile = File.read(File.expand_path("Dockerfile", __dir__))
+gemfile = File.read(File.expand_path("Gemfile", __dir__))
 
 expect(src.include?('LISTEN_HOST = "::"'), "listen host is ::")
 expect(!src.include?('"0.0.0.0"'), "Sinatra source does not bind 0.0.0.0")
 expect(src.include?("set :bind, listen_bind"), "Sinatra uses listen_bind")
 expect(src.include?("sslmode=disable"), "JDBC keeps sslmode=disable")
 expect(src.include?("ssl=false"), "JDBC keeps ssl=false")
+expect(src.include?("max_connections: PUMA_THREADS"), "Sequel pool matches PUMA_THREADS")
+expect(src.include?("respond_to?(:getArray)"), "pg_text_array accepts JDBC arrays")
 expect(puma.include?("tcp://[::]:"), "Puma config binds [::]")
 expect(!puma.include?("0.0.0.0"), "Puma config is not IPv4-only")
+expect(puma.match?(/^\s*workers 0\s*$/), "Puma stays in single mode")
+expect(puma.include?("PUMA_THREADS"), "Puma thread count is 2n+1 via PUMA_THREADS")
+expect(gemfile.include?('"puma", "~> 8.0"'), "Gemfile pins Puma 8")
 expect(!dockerfile.include?("-p 8080"), "Dockerfile does not use IPv4-only puma -p")
 expect(dockerfile.include?("puma") && dockerfile.include?("config.ru"), "Dockerfile uses Puma + config.ru (puma.rb bind)")
+expect(dockerfile.include?("jruby:10.0"), "Dockerfile uses JRuby 10.0 LTS")
+expect(!dockerfile.include?("jruby:10.1"), "Dockerfile does not use JRuby 10.1 tip")
+expect(dockerfile.include?("RACK_ENV=production"), "Dockerfile sets RACK_ENV=production")
+expect(dockerfile.include?("MaxRAMPercentage=55.0"), "Dockerfile sets container heap percentage")
+expect(dockerfile.include?("ActiveProcessorCount=1"), "Dockerfile pins one JVM processor")
+expect(!dockerfile.include?("--dev"), "Dockerfile does not enable jruby --dev")
 
 reg = src.index("def register_with_elixir")
 expect(!reg.nil?, "register_with_elixir exists")
@@ -52,6 +64,13 @@ if reg
 end
 
 require_relative "app"
+
+jdbc_array = Object.new
+def jdbc_array.getArray
+  ["elixir", "java"]
+end
+expect(pg_text_array(jdbc_array) == ["elixir", "java"], "pg_text_array unwraps JDBC getArray")
+expect(pg_text_array("{elixir,java}") == ["elixir", "java"], "pg_text_array still parses PG text arrays")
 
 expect(listen_host == "::", "listen_host helper is ::")
 expect(Sinatra::Application.settings.bind == "::" || Sinatra::Application.settings.bind == "[::]", "Sinatra bind is IPv6")

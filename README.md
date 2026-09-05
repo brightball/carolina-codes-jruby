@@ -11,8 +11,10 @@ This is a sibling of `carolina-codes-ruby`. It speaks the same v1 contract, incl
 
 Queries PostgreSQL **v1 views**. Registers with the Elixir site once on boot.
 
+Requires **JRuby 10.0 LTS** (Ruby 3.4 language level) on Java 21+. Production uses `jruby:10.0-jre21` with Puma 8 in single/threaded mode (`workers 0`, `PUMA_THREADS` default 3).
+
 ```bash
-# Requires a JVM + JRuby
+# Requires a JVM + JRuby 10.0 LTS
 bundle install
 DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/carolina_dev \
 CAROLINA_URL=http://127.0.0.1:4000 \
@@ -23,3 +25,5 @@ bundle exec puma -p 4003
 ```
 
 If this environment cannot run JRuby, the MRI Ruby API is the behavioral equivalent of this source.
+
+Local warm-path check (Rack mock, 20 warmup GETs then 10 timed `GET /v1/speakers?year=2026`, same Postgres): JRuby 10.0.6.0 + this app averaged about 14 ms (min ~9 ms); MRI Ruby 3.3 averaged about 3.5 ms. JRuby remains slower than MRI on this path; the gap is the JVM/JDBC runtime, not query count (`perf_test.rb` still bounds year listing at ≤ 4 SQL).

@@ -3,7 +3,7 @@
 source "https://rubygems.org"
 
 gem "sinatra", "~> 4.0"
-gem "puma", "~> 6.4"
+gem "puma", "~> 8.0"
 gem "sequel", "~> 5.84"
 gem "jdbc-postgres"
 gem "json", "~> 2.7"

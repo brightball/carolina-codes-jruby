@@ -7,6 +7,7 @@ require "net/http"
 require "uri"
 
 LISTEN_HOST = "::"
+PUMA_THREADS = Integer(ENV.fetch("PUMA_THREADS", "3"))
 
 module CatalogCounters
   class << self
@@ -85,7 +86,7 @@ def open_pool
   CatalogCounters.inc_connect
   return CatalogCounters.connect_fn.call if CatalogCounters.connect_fn
 
-  Sequel.connect(jdbc_database_url, max_connections: 8)
+  Sequel.connect(jdbc_database_url, max_connections: PUMA_THREADS)
 end
 
 DB = wrap_execute!(open_pool)
@@ -114,6 +115,11 @@ set :port, Integer(ENV.fetch("PORT", "4003"))
 disable :protection
 # Empty list allows all Host headers (Fly *.fly.dev + internal checks).
 set :host_authorization, permitted_hosts: []
+if ENV["RACK_ENV"] == "production"
+  disable :logging
+  disable :dump_errors
+  disable :show_exceptions
+end
 
 before do
   content_type :json
@@ -279,9 +285,17 @@ def unique_tags(talks, key)
 end
 
 def pg_text_array(value)
+  return [] if value.nil?
+
+  if value.respond_to?(:getArray)
+    begin
+      value = value.getArray
+    rescue StandardError
+      # Fall through to string / Array handling.
+    end
+  end
+
   case value
-  when nil
-    []
   when Array
     value.map(&:to_s).reject(&:empty?)
   when String
