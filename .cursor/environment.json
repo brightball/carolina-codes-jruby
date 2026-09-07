@@ -1,0 +1,14 @@
+{
+  "name": "carolina-codes-jruby",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "install": "bundle install",
+  "ports": [
+    {
+      "name": "api",
+      "port": 4003
+    }
+  ]
+}
