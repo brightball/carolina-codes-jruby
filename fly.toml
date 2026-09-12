@@ -17,7 +17,8 @@ primary_region = "iad"
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  # CMS polyglot timeout is 200ms; CRaC restore is ~40s. Stay up so JRuby can serve.
+  min_machines_running = 1
   processes = ["app"]
 
   [[http_service.checks]]
@@ -28,6 +29,6 @@ primary_region = "iad"
     timeout = "5s"
 
 [[vm]]
-  memory = "512mb"
+  memory = "1gb"
   cpu_kind = "shared"
   cpus = 1

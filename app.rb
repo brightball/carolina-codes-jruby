@@ -11,7 +11,7 @@ PUMA_THREADS = Integer(ENV.fetch("PUMA_THREADS", "3"))
 
 module CatalogCounters
   class << self
-    attr_accessor :connect_fn, :query_fn, :restore_env_fn
+    attr_accessor :connect_fn, :query_fn, :restore_env_fn, :register_http_fn
 
     def sql_count
       @sql_count || 0
@@ -29,11 +29,31 @@ module CatalogCounters
       @connect_count = connect_count + 1
     end
 
+    def register_attempt_count
+      @register_attempt_count || 0
+    end
+
+    def register_skip_count
+      @register_skip_count || 0
+    end
+
+    def inc_register_attempt
+      @register_attempt_count = register_attempt_count + 1
+    end
+
+    def inc_register_skip
+      @register_skip_count = register_skip_count + 1
+    end
+
     def reset!
       @sql_count = 0
       @connect_count = 0
+      @register_attempt_count = 0
+      @register_skip_count = 0
       $carolina_catalog_db = nil
+      $carolina_listing_cache = nil
       self.restore_env_fn = nil
+      self.register_http_fn = nil
     end
   end
 end
@@ -162,7 +182,7 @@ end
 get "/v1/speakers" do
   if params["year"]
     year = Integer(params["year"])
-    JSON.generate(data: year_speakers(year))
+    cached_listing("speakers:#{year}") { JSON.generate(data: year_speakers(year)) }
   else
     dataset = catalog_db[:v1_speakers].order(:last_name, :first_name)
     JSON.generate(data: dataset.all.map { |r| stringify_keys(r) })
@@ -195,8 +215,10 @@ end
 get "/v1/sponsors" do
   if params["year"]
     year = Integer(params["year"])
-    rows = catalog_db[:v1_year_sponsors].where(year: year).order(:name).all
-    JSON.generate(data: rows.map { |r| stringify_keys(r) })
+    cached_listing("sponsors:#{year}") do
+      rows = catalog_db[:v1_year_sponsors].where(year: year).order(:name).all
+      JSON.generate(data: rows.map { |r| stringify_keys(r) })
+    end
   else
     dataset = catalog_db[:v1_sponsors].order(:name)
     JSON.generate(data: dataset.all.map { |r| stringify_keys(r) })
@@ -330,8 +352,13 @@ end
 def register_with_elixir
   url = ENV["CAROLINA_URL"]
   token = ENV["POLYGLOT_REGISTER_TOKEN"]
-  return if url.nil? || url.empty? || token.nil? || token.empty?
+  if url.nil? || url.empty? || token.nil? || token.empty?
+    CatalogCounters.inc_register_skip
+    warn "registration skipped: missing CAROLINA_URL or POLYGLOT_REGISTER_TOKEN"
+    return :skipped
+  end
 
+  CatalogCounters.inc_register_attempt
   uri = URI.join(url.end_with?("/") ? url : "#{url}/", "internal/api-endpoints/register")
   body = {
     language: LANGUAGE,
@@ -344,13 +371,19 @@ def register_with_elixir
     endpoints: ENDPOINTS
   }
 
+  if CatalogCounters.register_http_fn
+    return CatalogCounters.register_http_fn.call(uri, JSON.generate(body))
+  end
+
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = uri.scheme == "https"
   req = Net::HTTP::Post.new(uri)
   req["Authorization"] = "Bearer #{token}"
   req["Content-Type"] = "application/json"
   req.body = JSON.generate(body)
-  http.request(req)
+  res = http.request(req)
+  warn "registered with CMS status=#{res.code} base_url=#{body[:base_url]}"
+  res
 rescue StandardError => e
   warn "registration failed: #{e.message}"
 end
@@ -376,10 +409,48 @@ def refresh_env_after_restore!
   end
 end
 
-# After CRaC restore (or a normal Puma boot): copy restore-time env, then
-# register with the CMS. The JDBC pool is opened lazily on the first catalog
-# request so /health can listen without Postgres.
+LISTING_CACHE_TTL_SEC = 30
+LISTING_CACHE_MUTEX = Mutex.new
+
+def listing_cache
+  $carolina_listing_cache ||= {}
+end
+
+def cached_listing(key)
+  now = Time.now.to_f
+  LISTING_CACHE_MUTEX.synchronize do
+    hit = listing_cache[key]
+    return hit[:json] if hit && (now - hit[:at]) < LISTING_CACHE_TTL_SEC
+  end
+  json = yield
+  LISTING_CACHE_MUTEX.synchronize do
+    listing_cache[key] = { json: json, at: Time.now.to_f }
+  end
+  json
+end
+
+def warmup_years
+  [2026, Integer(Time.now.year)].uniq
+end
+
+# Prime JDBC + year listings so CMS's ~200ms polyglot timeout hits cached JSON.
+def warmup_catalog!
+  catalog_db
+  warmup_years.each do |year|
+    cached_listing("speakers:#{year}") { JSON.generate(data: year_speakers(year)) }
+    cached_listing("sponsors:#{year}") do
+      rows = catalog_db[:v1_year_sponsors].where(year: year).order(:name).all
+      JSON.generate(data: rows.map { |r| stringify_keys(r) })
+    end
+  end
+rescue StandardError => e
+  warn "catalog warmup failed: #{e.message}"
+end
+
+# After CRaC restore (or a normal Puma boot): copy restore-time env, warm the
+# catalog, then register with the CMS using restore-time secrets.
 def acquire_after_restore!
   refresh_env_after_restore!
+  warmup_catalog!
   register_with_elixir
 end

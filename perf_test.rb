@@ -82,12 +82,15 @@ expect(!rackup.include?("TCPServer"), "config.ru does not bind the listen port")
 reg = src.index("def register_with_elixir")
 expect(!reg.nil?, "register_with_elixir exists")
 if reg
-  acq = src.index("def acquire_after_restore!")
-  fn = acq ? src[reg...acq] : src[reg..]
+  nextd = src.index("\ndef ", reg + 1)
+  fn = nextd ? src[reg...nextd] : src[reg..]
   expect(!fn.include?("open_pool"), "register-once does not open the pool")
   expect(!fn.include?("DB["), "register-once does not run catalog SQL")
   expect(!fn.include?("catalog_db"), "register-once does not open catalog_db")
   expect(!fn.include?("Sequel.connect"), "register-once does not open Sequel")
+  expect(fn.include?("inc_register_attempt"), "register records an attempt when URL+token are set")
+  expect(fn.include?("inc_register_skip"), "register records a skip when URL or token is missing")
+  expect(fn.include?("registration skipped"), "missing CMS URL/token is logged, not silent")
 end
 
 expect(src.include?("def refresh_env_after_restore!"), "refresh_env_after_restore! exists")
@@ -98,15 +101,20 @@ expect(probe.include?("jdbc_database_url"), "env probe asserts jdbc_database_url
 
 acq = src.index("def acquire_after_restore!")
 if acq
-  body = src[acq..]
+  nextd = src.index("\ndef ", acq + 1)
+  body = nextd ? src[acq...nextd] : src[acq..]
   expect(body.include?("refresh_env_after_restore!"), "after restore refreshes ENV before CMS/JDBC")
+  expect(body.include?("warmup_catalog!"), "after restore warms catalog before CMS register")
   expect(body.include?("register_with_elixir"), "after restore registers with CMS")
-  expect(!body.include?("catalog_db"), "acquire_after_restore! does not open JDBC")
-  expect(!body.include?("open_pool"), "acquire_after_restore! does not call open_pool")
   refresh_at = body.index("refresh_env_after_restore!")
+  warm_at = body.index("warmup_catalog!")
   register_at = body.index("register_with_elixir")
   expect(!refresh_at.nil? && !register_at.nil? && refresh_at < register_at, "ENV refresh runs before CMS register")
+  expect(!warm_at.nil? && warm_at < register_at, "catalog warmup runs before CMS register")
 end
+expect(src.include?("def warmup_catalog!"), "warmup_catalog! exists")
+expect(src.include?("def cached_listing"), "year listings are cached for the CMS timeout")
+expect(File.read(File.expand_path("fly.toml", __dir__)).include?("min_machines_running = 1"), "Fly keeps one machine up for CMS 200ms budget")
 
 if RUBY_ENGINE != "jruby"
   warn "skip JRuby runtime checks (RUBY_ENGINE=#{RUBY_ENGINE})"
@@ -145,42 +153,57 @@ expect(checkpoint_jdbc.include?("127.0.0.1"), "checkpoint identity JDBC falls ba
 
 restore_url = "postgres://probe-user:probe-pass@restore-db.example:6543/restore_db"
 restore_cms = "http://127.0.0.1:1"
+posted = []
+CatalogCounters.register_http_fn = lambda { |_uri, body|
+  posted << body
+  :ok
+}
+stub_pool = Object.new
+def stub_pool.execute(*)
+  []
+end
+CatalogCounters.connect_fn = lambda { stub_pool }
 CatalogCounters.restore_env_fn = lambda {
   {
     "DATABASE_URL" => restore_url,
     "CAROLINA_URL" => restore_cms,
-    "POLYGLOT_REGISTER_TOKEN" => "restore-token"
+    "POLYGLOT_REGISTER_TOKEN" => "restore-token",
+    "PUBLIC_BASE_URL" => "https://carolina-codes-jruby.fly.dev"
   }
 }
 acquire_after_restore!
 expect(ENV["DATABASE_URL"] == restore_url, "acquire_after_restore! copies restore-time DATABASE_URL into ENV")
 expect(ENV["CAROLINA_URL"] == restore_cms, "acquire_after_restore! copies restore-time CAROLINA_URL into ENV")
 expect(ENV["POLYGLOT_REGISTER_TOKEN"] == "restore-token", "acquire_after_restore! copies restore-time register token into ENV")
+expect(CatalogCounters.register_attempt_count == 1, "register is attempted when CMS URL and token are set")
+expect(CatalogCounters.register_skip_count == 0, "register does not skip when CMS URL and token are set")
+expect(posted.size == 1, "register POSTs a body when CMS URL and token are set")
+expect(posted.first.include?("JRuby"), "register payload names JRuby")
+expect(posted.first.include?("carolina-codes-jruby.fly.dev"), "register payload uses restore-time PUBLIC_BASE_URL")
 restored_jdbc = jdbc_database_url
 expect(restored_jdbc.include?("restore-db.example"), "jdbc_database_url sees restore-time host")
 expect(restored_jdbc.include?("probe-user"), "jdbc_database_url sees restore-time user")
 expect(!restored_jdbc.include?("127.0.0.1"), "jdbc_database_url is not the checkpoint fallback")
+expect(CatalogCounters.connect_count == 1, "warmup_catalog! opens the catalog pool")
+expect(!$carolina_catalog_db.nil?, "warmup_catalog! assigns the catalog pool")
+
+CatalogCounters.restore_env_fn = lambda {
+  { "DATABASE_URL" => restore_url, "CAROLINA_URL" => restore_cms }
+}
+ENV.delete("POLYGLOT_REGISTER_TOKEN")
+acquire_after_restore!
+expect(CatalogCounters.register_skip_count == 1, "register skips when token is missing after refresh")
+
 CatalogCounters.restore_env_fn = nil
+CatalogCounters.connect_fn = nil
+CatalogCounters.register_http_fn = nil
 ENV.delete("DATABASE_URL")
 ENV.delete("CAROLINA_URL")
 ENV.delete("POLYGLOT_REGISTER_TOKEN")
+ENV.delete("PUBLIC_BASE_URL")
 ENV["DATABASE_URL"] = saved_db_url unless saved_db_url.nil?
 ENV["CAROLINA_URL"] = saved_cms_url unless saved_cms_url.nil?
 ENV["POLYGLOT_REGISTER_TOKEN"] = saved_token unless saved_token.nil?
-
-acquire_after_restore!
-expect(CatalogCounters.connect_count == 0, "acquire_after_restore! does not open the catalog pool")
-expect($carolina_catalog_db.nil?, "acquire_after_restore! does not assign the catalog pool")
-
-stub_pool = Object.new
-def stub_pool.execute(*)
-  []
-end
-CatalogCounters.connect_fn = lambda { stub_pool }
-catalog_db
-expect(CatalogCounters.connect_count == 1, "catalog_db opens the pool on first use")
-expect(!$carolina_catalog_db.nil?, "catalog_db assigns the catalog pool")
-CatalogCounters.connect_fn = nil
 CatalogCounters.reset!
 expect(CatalogCounters.connect_count == 0, "reset clears the deferred pool")
 
@@ -232,6 +255,7 @@ if listing.status == 200
   listing2 = Rack::MockRequest.new(Sinatra::Application).get("/v1/speakers?year=2026")
   expect(listing2.status == 200, "second catalog request succeeds")
   expect(CatalogCounters.connect_count == boot_connects, "second catalog request reuses pool (no extra connect)")
+  expect(CatalogCounters.sql_count == 0, "cached year listing does not re-run SQL")
 else
   expect(sql < (2 * 3), "failed listing did not run per-row SQL for N=3")
 end
