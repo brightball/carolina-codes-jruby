@@ -30,10 +30,10 @@ ENV PORT=8080
 ENV RACK_ENV=production
 ENV JRUBY_CHECKPOINT=/app/.jruby.checkpoint
 # Heap is pinned (not only MaxRAMPercentage) so the checkpoint fits Fly 512mb.
-# CPUFeatures is the Fly iad machine mask: Depot builders have extra AVX-512
-# bits that Firecracker VMs lack. These flags apply at checkpoint. bin/start
-# uses Warp-only JAVA_OPTS on restore (UseG1GC/heap/CPU are not restore-settable).
-ENV JAVA_OPTS="-Xms256m -Xmx256m -XX:MaxRAMPercentage=55.0 -XX:+UseG1GC -XX:ActiveProcessorCount=1 -XX:CRaCEngine=warp -XX:CPUFeatures=0xe7461c05fdfff7,0xde6"
+# CPUFeatures=generic: Depot builders have extra AVX-512 bits Firecracker VMs
+# lack. These flags apply at checkpoint. bin/start uses Warp-only JAVA_OPTS on
+# restore (GC/heap/CPU flags are not restore-settable).
+ENV JAVA_OPTS="-Xms256m -Xmx256m -XX:MaxRAMPercentage=55.0 -XX:+UseG1GC -XX:ActiveProcessorCount=1 -XX:CRaCEngine=warp -XX:CPUFeatures=generic"
 
 # Pre-boot JRuby + the app with no listen socket, DB pool, or CMS registration.
 # CheckpointMain SIGKILLs after snapshot (exit 137); the directory is the success signal.

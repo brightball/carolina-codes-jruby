@@ -15,7 +15,7 @@ Requires **JRuby 10.0 LTS** (Ruby 3.4 language level) on Java 21+. Puma 8 stays 
 
 Production (Fly `auto_stop_machines`) uses Azul Zulu **21-jdk-crac** with JRuby’s CRaC flags, not a cold JVM boot:
 
-- Image build: `jruby --nocache --checkpoint=/app/.jruby.checkpoint` (`-XX:CRaCCheckpointTo`) plus `-XX:CRaCEngine=warp` and `-XX:CPUFeatures=…` (Fly iad mask; Depot builders have extra CPU bits). Loads the app **without** a listen socket, JDBC pool, or CMS registration.
+- Image build: `jruby --nocache --checkpoint=/app/.jruby.checkpoint` (`-XX:CRaCCheckpointTo`) plus `-XX:CRaCEngine=warp` and `-XX:CPUFeatures=generic` (Depot builders have extra CPU bits Fly Firecracker VMs lack). Loads the app **without** a listen socket, JDBC pool, or CMS registration. Restore falls back to a cold Puma boot if the snapshot cannot be restored.
 - Start: `bin/start` → `jruby --nocache --restore=/app/.jruby.checkpoint` (`-XX:CRaCRestoreFrom`, Warp-only `JAVA_OPTS`). `config.ru` calls `acquire_after_restore!`, which copies restore-time `System.getenv` into Ruby `ENV` (CRaC leaves JRuby `ENV` at checkpoint values) then registers with the CMS. The JDBC pool opens on the first catalog request, not at checkpoint.
 
 Leyden `-XX:AOTCache` is the fallback if a CRaC JDK is unavailable; this image uses CRaC because restore is the Lambda/SnapStart analog for scale-to-zero.

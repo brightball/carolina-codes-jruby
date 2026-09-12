@@ -2,7 +2,17 @@
 # Production start: restore the image-baked JRuby CRaC checkpoint, then Puma.
 # `jruby --restore=path` maps to -XX:CRaCRestoreFrom=path (JRuby bin/jruby.sh).
 # Restore must not re-pass checkpoint-baked GC, heap, or CPU flags.
+# If restore fails (CPU/glibc mismatch vs the Depot builder), cold-start Puma.
 set -e
 checkpoint="${JRUBY_CHECKPOINT:-/app/.jruby.checkpoint}"
-export JAVA_OPTS="${CRAC_RESTORE_JAVA_OPTS:--XX:CRaCEngine=warp}"
-exec bundle exec jruby --nocache --restore="$checkpoint" -S puma config.ru
+restore_opts="${CRAC_RESTORE_JAVA_OPTS:--XX:CRaCEngine=warp}"
+cold_opts="-Xms256m -Xmx256m -XX:MaxRAMPercentage=55.0 -XX:+UseG1GC -XX:ActiveProcessorCount=1"
+if [ -n "$(ls -A "$checkpoint" 2>/dev/null)" ]; then
+  export JAVA_OPTS="$restore_opts"
+  if bundle exec jruby --nocache --restore="$checkpoint" -S puma config.ru; then
+    exit 0
+  fi
+  echo "CRaC restore failed; cold-starting" >&2
+fi
+export JAVA_OPTS="$cold_opts"
+exec bundle exec jruby --nocache -S puma config.ru
