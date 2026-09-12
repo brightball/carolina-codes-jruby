@@ -11,7 +11,7 @@ PUMA_THREADS = Integer(ENV.fetch("PUMA_THREADS", "3"))
 
 module CatalogCounters
   class << self
-    attr_accessor :connect_fn, :query_fn
+    attr_accessor :connect_fn, :query_fn, :restore_env_fn
 
     def sql_count
       @sql_count || 0
@@ -32,6 +32,8 @@ module CatalogCounters
     def reset!
       @sql_count = 0
       @connect_count = 0
+      $carolina_catalog_db = nil
+      self.restore_env_fn = nil
     end
   end
 end
@@ -89,7 +91,17 @@ def open_pool
   Sequel.connect(jdbc_database_url, max_connections: PUMA_THREADS)
 end
 
-DB = wrap_execute!(open_pool)
+# CRaC checkpoint must not freeze a JDBC pool. Open after restore (config.ru)
+# or lazily on the first catalog request.
+CATALOG_DB_MUTEX = Mutex.new
+
+def catalog_db
+  return $carolina_catalog_db if $carolina_catalog_db
+
+  CATALOG_DB_MUTEX.synchronize do
+    $carolina_catalog_db ||= wrap_execute!(open_pool)
+  end
+end
 
 LANGUAGE = "JRuby"
 LANGUAGE_VERSION = JRUBY_VERSION
@@ -143,7 +155,7 @@ get "/health" do
 end
 
 get "/v1/years" do
-  rows = DB[:v1_years].order(Sequel.desc(:year)).all
+  rows = catalog_db[:v1_years].order(Sequel.desc(:year)).all
   JSON.generate(data: rows.map { |r| stringify_keys(r) })
 end
 
@@ -152,14 +164,14 @@ get "/v1/speakers" do
     year = Integer(params["year"])
     JSON.generate(data: year_speakers(year))
   else
-    dataset = DB[:v1_speakers].order(:last_name, :first_name)
+    dataset = catalog_db[:v1_speakers].order(:last_name, :first_name)
     JSON.generate(data: dataset.all.map { |r| stringify_keys(r) })
   end
 end
 
 get %r{/v1/speakers/(\d{4})/([^/]+)} do |year, slug|
   year = Integer(year)
-  speaker = DB[:v1_speakers].where(slug: slug).first
+  speaker = catalog_db[:v1_speakers].where(slug: slug).first
   halt 404, JSON.generate(error: "not_found") unless speaker
 
   payload = speaker_with_year(speaker, year)
@@ -168,10 +180,10 @@ get %r{/v1/speakers/(\d{4})/([^/]+)} do |year, slug|
 end
 
 get "/v1/speakers/:slug" do
-  speaker = DB[:v1_speakers].where(slug: params["slug"]).first
+  speaker = catalog_db[:v1_speakers].where(slug: params["slug"]).first
   halt 404, JSON.generate(error: "not_found") unless speaker
 
-  talks = DB[:v1_talks].where(speaker_slug: params["slug"]).all
+  talks = catalog_db[:v1_talks].where(speaker_slug: params["slug"]).all
   years = talks.map { |t| t[:year] || t["year"] }.uniq.sort.reverse
   payload = stringify_keys(speaker).merge(
     "years" => years,
@@ -183,40 +195,40 @@ end
 get "/v1/sponsors" do
   if params["year"]
     year = Integer(params["year"])
-    rows = DB[:v1_year_sponsors].where(year: year).order(:name).all
+    rows = catalog_db[:v1_year_sponsors].where(year: year).order(:name).all
     JSON.generate(data: rows.map { |r| stringify_keys(r) })
   else
-    dataset = DB[:v1_sponsors].order(:name)
+    dataset = catalog_db[:v1_sponsors].order(:name)
     JSON.generate(data: dataset.all.map { |r| stringify_keys(r) })
   end
 end
 
 get %r{/v1/sponsors/(\d{4})/([^/]+)} do |year, slug|
   year = Integer(year)
-  row = DB[:v1_year_sponsors].where(year: year, slug: slug).first
+  row = catalog_db[:v1_year_sponsors].where(year: year, slug: slug).first
   halt 404, JSON.generate(error: "not_found") unless row
 
-  years = DB[:v1_sponsorships].where(sponsor_slug: slug).select_map(:year).uniq.sort.reverse
+  years = catalog_db[:v1_sponsorships].where(sponsor_slug: slug).select_map(:year).uniq.sort.reverse
   payload = stringify_keys(row).merge(
     "years" => years,
     "other_years" => years.reject { |y| y == year },
-    "sponsorships" => DB[:v1_sponsorships].where(sponsor_slug: slug).all.map { |s| stringify_keys(s) }
+    "sponsorships" => catalog_db[:v1_sponsorships].where(sponsor_slug: slug).all.map { |s| stringify_keys(s) }
   )
   JSON.generate(data: payload)
 end
 
 get "/v1/sponsors/:slug" do
-  sponsor = DB[:v1_sponsors].where(slug: params["slug"]).first
+  sponsor = catalog_db[:v1_sponsors].where(slug: params["slug"]).first
   halt 404, JSON.generate(error: "not_found") unless sponsor
 
-  sponsorships = DB[:v1_sponsorships].where(sponsor_slug: params["slug"]).all
+  sponsorships = catalog_db[:v1_sponsorships].where(sponsor_slug: params["slug"]).all
   payload = stringify_keys(sponsor).merge("sponsorships" => sponsorships.map { |s| stringify_keys(s) })
   JSON.generate(data: payload)
 end
 
 def year_speakers(year)
-  speakers = DB[:v1_speakers]
-    .where(slug: DB[:v1_talks].where(year: year).select(:speaker_slug))
+  speakers = catalog_db[:v1_speakers]
+    .where(slug: catalog_db[:v1_talks].where(year: year).select(:speaker_slug))
     .order(:last_name, :first_name)
     .all
   attach_year_tags(speakers, year)
@@ -244,14 +256,14 @@ def attach_year_tags(speakers, year)
 end
 
 def load_talks_for_year(year)
-  DB[:v1_talks].where(year: year).order(:speaker_slug, Sequel.desc(:year)).all
+  catalog_db[:v1_talks].where(year: year).order(:speaker_slug, Sequel.desc(:year)).all
     .group_by { |talk| talk[:speaker_slug] || talk["speaker_slug"] }
 end
 
 def load_years_for_slugs(slugs)
   return {} if slugs.empty?
 
-  rows = DB[:v1_talks]
+  rows = catalog_db[:v1_talks]
     .where(speaker_slug: slugs)
     .select(:speaker_slug, :year)
     .distinct
@@ -268,8 +280,8 @@ end
 
 def speaker_with_year(speaker, year)
   slug = speaker[:slug] || speaker["slug"]
-  talks = DB[:v1_talks].where(speaker_slug: slug, year: year).all.map { |t| stringify_keys(t) }
-  years = DB[:v1_talks].where(speaker_slug: slug).select_map(:year).uniq.sort.reverse
+  talks = catalog_db[:v1_talks].where(speaker_slug: slug, year: year).all.map { |t| stringify_keys(t) }
+  years = catalog_db[:v1_talks].where(speaker_slug: slug).select_map(:year).uniq.sort.reverse
   stringify_keys(speaker).merge(
     "year" => year,
     "years" => years,
@@ -343,4 +355,31 @@ rescue StandardError => e
   warn "registration failed: #{e.message}"
 end
 
-register_with_elixir
+# CRaC restore keeps JRuby's ENV at checkpoint values. Azul copies the
+# restore-time container env into java.lang.System.getenv. Overlay that
+# onto ENV before reading DATABASE_URL / CMS secrets.
+def crac_restore_env_map
+  if CatalogCounters.restore_env_fn
+    CatalogCounters.restore_env_fn.call
+  elsif RUBY_ENGINE == "jruby"
+    java.lang.System.getenv
+  end
+end
+
+def refresh_env_after_restore!
+  map = crac_restore_env_map
+  return if map.nil?
+
+  map.each do |key, value|
+    next if value.nil?
+    ENV[key.to_s] = value.to_s
+  end
+end
+
+# After CRaC restore (or a normal Puma boot): copy restore-time env, then
+# register with the CMS. The JDBC pool is opened lazily on the first catalog
+# request so /health can listen without Postgres.
+def acquire_after_restore!
+  refresh_env_after_restore!
+  register_with_elixir
+end

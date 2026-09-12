@@ -3,3 +3,6 @@ vendor/
 .env
 *.jar
 .idea/
+.jruby.checkpoint/
+*.aot
+

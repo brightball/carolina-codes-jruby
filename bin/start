@@ -1,0 +1,8 @@
+#!/bin/sh
+# Production start: restore the image-baked JRuby CRaC checkpoint, then Puma.
+# `jruby --restore=path` maps to -XX:CRaCRestoreFrom=path (JRuby bin/jruby.sh).
+# Restore must not re-pass checkpoint-baked GC, heap, or CPU flags.
+set -e
+checkpoint="${JRUBY_CHECKPOINT:-/app/.jruby.checkpoint}"
+export JAVA_OPTS="${CRAC_RESTORE_JAVA_OPTS:--XX:CRaCEngine=warp}"
+exec bundle exec jruby --nocache --restore="$checkpoint" -S puma config.ru

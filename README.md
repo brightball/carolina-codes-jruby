@@ -11,7 +11,14 @@ This is a sibling of `carolina-codes-ruby`. It speaks the same v1 contract, incl
 
 Queries PostgreSQL **v1 views**. Registers with the Elixir site once on boot.
 
-Requires **JRuby 10.0 LTS** (Ruby 3.4 language level) on Java 21+. Production uses `jruby:10.0-jre21` with Puma 8 in single/threaded mode (`workers 0`, `PUMA_THREADS` default 3).
+Requires **JRuby 10.0 LTS** (Ruby 3.4 language level) on Java 21+. Puma 8 stays in single/threaded mode (`workers 0`, `PUMA_THREADS` default 3). Do not pass `jruby --dev`.
+
+Production (Fly `auto_stop_machines`) uses Azul Zulu **21-jdk-crac** with JRuby’s CRaC flags, not a cold JVM boot:
+
+- Image build: `jruby --nocache --checkpoint=/app/.jruby.checkpoint` (`-XX:CRaCCheckpointTo`) plus `-XX:CRaCEngine=warp`, after loading the app **without** a listen socket, JDBC pool, or CMS registration.
+- Start: `bin/start` → `jruby --nocache --restore=/app/.jruby.checkpoint` (`-XX:CRaCRestoreFrom`, Warp-only `JAVA_OPTS`). `config.ru` calls `acquire_after_restore!`, which copies restore-time `System.getenv` into Ruby `ENV` (CRaC leaves JRuby `ENV` at checkpoint values) then registers with the CMS. The JDBC pool opens on the first catalog request, not at checkpoint.
+
+Leyden `-XX:AOTCache` is the fallback if a CRaC JDK is unavailable; this image uses CRaC because restore is the Lambda/SnapStart analog for scale-to-zero.
 
 ```bash
 # Requires a JVM + JRuby 10.0 LTS
