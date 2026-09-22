@@ -21,7 +21,7 @@ def assert_years_desc(speakers, label)
 
     found_multi = true
     years.each_cons(2) do |a, b|
-      expect(a >= b, "#{label} years DESC for #{sp["slug"] || sp[:slug]}: #{years}")
+      expect(a >= b, "#{label} years DESC for #{sp['slug'] || sp[:slug]}: #{years}")
     end
   end
   expect(found_multi, "#{label} expected a speaker with >=2 years")
@@ -34,6 +34,8 @@ gemfile = File.read(File.expand_path("Gemfile", __dir__))
 start = File.read(File.expand_path("bin/start", __dir__))
 checkpoint = File.read(File.expand_path("bin/crac_checkpoint.rb", __dir__))
 rackup = File.read(File.expand_path("config.ru", __dir__))
+mise = File.read(File.expand_path("mise.toml", __dir__))
+readme = File.read(File.expand_path("README.md", __dir__))
 
 expect(src.include?('LISTEN_HOST = "::"'), "listen host is ::")
 expect(!src.include?('"0.0.0.0"'), "Sinatra source does not bind 0.0.0.0")
@@ -56,12 +58,28 @@ expect(dockerfile.include?("MaxRAMPercentage=55.0"), "Dockerfile sets container 
 expect(dockerfile.include?("ActiveProcessorCount=1"), "Dockerfile pins one JVM processor")
 expect(!dockerfile.include?("--dev"), "Dockerfile does not enable jruby --dev")
 expect(!start.include?("--dev"), "start does not enable jruby --dev")
-expect(dockerfile.include?("jdk-crac"), "production image is a CRaC JDK")
+expect(mise.match?(/^\s*java\s*=\s*"27(\.0(\.0)?)?"\s*$/), "mise pins Java 27")
+expect(!mise.match?(/java\s*=\s*"21/), "mise does not pin Java 21")
+expect(!dockerfile.include?("21-jdk-crac"), "Dockerfile runtime is not 21-jdk-crac")
+expect(!dockerfile.match?(/zulu-openjdk:21\b/), "Dockerfile does not use Zulu Java 21")
+expect(
+  dockerfile.include?("ca-crac-jdk27") || dockerfile.include?("27-jdk-crac"),
+  "production runtime JDK is JDK 27 CRaC"
+)
+expect(
+  dockerfile.include?("jdk-crac") || dockerfile.include?("ca-crac"),
+  "production image is a CRaC JDK"
+)
+expect(!readme.include?("21-jdk-crac"), "README does not name 21-jdk-crac")
+expect(!readme.match?(/Java 21/), "README does not pin Java 21")
+expect(readme.match?(/JDK 27|Java 27/), "README documents JDK 27")
+expect(readme.include?("CRaC"), "README documents CRaC production")
 expect(dockerfile.include?("CRaCEngine=warp"), "JAVA_OPTS uses Warp CRaC engine")
 expect(dockerfile.include?("CPUFeatures="), "checkpoint pins CPUFeatures for Fly restore CPUs")
 expect(dockerfile.include?("--checkpoint"), "image build runs jruby --checkpoint")
 expect(dockerfile.include?(".jruby.checkpoint"), "pre-boot checkpoint dir is baked into the image")
-expect(dockerfile.include?("bin/start") || dockerfile.include?("--restore"), "Dockerfile CMD is the CRaC restore start path")
+expect(dockerfile.include?("bin/start") || dockerfile.include?("--restore"),
+       "Dockerfile CMD is the CRaC restore start path")
 expect(start.include?("--restore"), "start uses jruby --restore (CRaCRestoreFrom)")
 expect(start.include?("--nocache"), "restore disables automatic AppCDS")
 expect(dockerfile.include?("--nocache"), "checkpoint disables automatic AppCDS")
@@ -114,7 +132,8 @@ if acq
 end
 expect(src.include?("def warmup_catalog!"), "warmup_catalog! exists")
 expect(src.include?("def cached_listing"), "year listings are cached for the CMS timeout")
-expect(File.read(File.expand_path("fly.toml", __dir__)).include?("min_machines_running = 1"), "Fly keeps one machine up for CMS 200ms budget")
+expect(File.read(File.expand_path("fly.toml", __dir__)).include?("min_machines_running = 1"),
+       "Fly keeps one machine up for CMS 200ms budget")
 
 if RUBY_ENGINE != "jruby"
   warn "skip JRuby runtime checks (RUBY_ENGINE=#{RUBY_ENGINE})"
@@ -126,25 +145,29 @@ if RUBY_ENGINE != "jruby"
   exit 0
 end
 
+spec = java.lang.System.getProperty("java.specification.version")
+expect(spec == "27", "JRuby runtime java.specification.version is 27 (got #{spec})")
+
 require "rack/mock"
 require_relative "app"
 
 jdbc_array = Object.new
 def jdbc_array.getArray
-  ["elixir", "java"]
+  %w[elixir java]
 end
-expect(pg_text_array(jdbc_array) == ["elixir", "java"], "pg_text_array unwraps JDBC getArray")
-expect(pg_text_array("{elixir,java}") == ["elixir", "java"], "pg_text_array still parses PG text arrays")
+expect(pg_text_array(jdbc_array) == %w[elixir java], "pg_text_array unwraps JDBC getArray")
+expect(pg_text_array("{elixir,java}") == %w[elixir java], "pg_text_array still parses PG text arrays")
 
 expect(listen_host == "::", "listen_host helper is ::")
-expect(Sinatra::Application.settings.bind == "::" || Sinatra::Application.settings.bind == "[::]", "Sinatra bind is IPv6")
+expect(["::", "[::]"].include?(Sinatra::Application.settings.bind),
+       "Sinatra bind is IPv6")
 
-expect(CatalogCounters.connect_count == 0, "require app does not open the production DB pool")
+expect(CatalogCounters.connect_count.zero?, "require app does not open the production DB pool")
 expect($carolina_catalog_db.nil?, "require app does not assign the catalog pool")
 
-saved_db_url = ENV["DATABASE_URL"]
-saved_cms_url = ENV["CAROLINA_URL"]
-saved_token = ENV["POLYGLOT_REGISTER_TOKEN"]
+saved_db_url = ENV.fetch("DATABASE_URL", nil)
+saved_cms_url = ENV.fetch("CAROLINA_URL", nil)
+saved_token = ENV.fetch("POLYGLOT_REGISTER_TOKEN", nil)
 ENV.delete("DATABASE_URL")
 ENV.delete("CAROLINA_URL")
 ENV.delete("POLYGLOT_REGISTER_TOKEN")
@@ -162,7 +185,7 @@ stub_pool = Object.new
 def stub_pool.execute(*)
   []
 end
-CatalogCounters.connect_fn = lambda { stub_pool }
+CatalogCounters.connect_fn = -> { stub_pool }
 CatalogCounters.restore_env_fn = lambda {
   {
     "DATABASE_URL" => restore_url,
@@ -174,9 +197,10 @@ CatalogCounters.restore_env_fn = lambda {
 acquire_after_restore!
 expect(ENV["DATABASE_URL"] == restore_url, "acquire_after_restore! copies restore-time DATABASE_URL into ENV")
 expect(ENV["CAROLINA_URL"] == restore_cms, "acquire_after_restore! copies restore-time CAROLINA_URL into ENV")
-expect(ENV["POLYGLOT_REGISTER_TOKEN"] == "restore-token", "acquire_after_restore! copies restore-time register token into ENV")
+expect(ENV["POLYGLOT_REGISTER_TOKEN"] == "restore-token",
+       "acquire_after_restore! copies restore-time register token into ENV")
 expect(CatalogCounters.register_attempt_count == 1, "register is attempted when CMS URL and token are set")
-expect(CatalogCounters.register_skip_count == 0, "register does not skip when CMS URL and token are set")
+expect(CatalogCounters.register_skip_count.zero?, "register does not skip when CMS URL and token are set")
 expect(posted.size == 1, "register POSTs a body when CMS URL and token are set")
 expect(posted.first.include?("JRuby"), "register payload names JRuby")
 expect(posted.first.include?("carolina-codes-jruby.fly.dev"), "register payload uses restore-time PUBLIC_BASE_URL")
@@ -205,14 +229,14 @@ ENV["DATABASE_URL"] = saved_db_url unless saved_db_url.nil?
 ENV["CAROLINA_URL"] = saved_cms_url unless saved_cms_url.nil?
 ENV["POLYGLOT_REGISTER_TOKEN"] = saved_token unless saved_token.nil?
 CatalogCounters.reset!
-expect(CatalogCounters.connect_count == 0, "reset clears the deferred pool")
+expect(CatalogCounters.connect_count.zero?, "reset clears the deferred pool")
 
 boot_connects = CatalogCounters.connect_count
 CatalogCounters.instance_variable_set(:@sql_count, 0)
 health = Rack::MockRequest.new(Sinatra::Application).get("/health")
 expect(health.status == 200, "/health returns 200")
 expect(health.body.include?('"ok":true') || health.body.include?('"ok": true'), "/health body is ok JSON")
-expect(CatalogCounters.sql_count == 0, "/health does not run SQL")
+expect(CatalogCounters.sql_count.zero?, "/health does not run SQL")
 expect(CatalogCounters.connect_count == boot_connects, "/health does not open Postgres")
 
 live = false
@@ -236,9 +260,7 @@ data =
 speakers = data.is_a?(Array) ? data.size : 0
 warn "year list status=#{listing.status} sql=#{sql} speakers=#{speakers} connects=#{CatalogCounters.connect_count}"
 
-if live && listing.status != 200
-  expect(false, "live year listing status #{listing.status} body #{body[0, 400]}")
-end
+expect(false, "live year listing status #{listing.status} body #{body[0, 400]}") if live && listing.status != 200
 
 if listing.status == 200
   expect(speakers >= 3, "year listing returns N>=3 speakers")
@@ -255,7 +277,7 @@ if listing.status == 200
   listing2 = Rack::MockRequest.new(Sinatra::Application).get("/v1/speakers?year=2026")
   expect(listing2.status == 200, "second catalog request succeeds")
   expect(CatalogCounters.connect_count == boot_connects, "second catalog request reuses pool (no extra connect)")
-  expect(CatalogCounters.sql_count == 0, "cached year listing does not re-run SQL")
+  expect(CatalogCounters.sql_count.zero?, "cached year listing does not re-run SQL")
 else
   expect(sql < (2 * 3), "failed listing did not run per-row SQL for N=3")
 end

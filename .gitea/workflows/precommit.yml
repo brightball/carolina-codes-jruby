@@ -1,0 +1,153 @@
+# One Gitea Actions job per quality check. Not a single combined job.
+#
+# act_runner starts a new container per job, so jobs cannot share a live
+# filesystem. Host bind-mounts are also blocked. Prepare token-clones
+# GITHUB_SHA, installs the shared packages (OS toolchain, gems, semgrep,
+# gitleaks), and uploads a workspace tarball. Check jobs restore that
+# artifact and run only their check. jruby:10.0 has no Node, so those jobs
+# apt-get nodejs only to run the artifact action — they do not clone,
+# bundle install, or reinstall build-essential.
+#
+# Empty runner image: clone GITHUB_SHA with the job token over HTTPS.
+# Gitea git HTTP returns 401 without the token. Do not git init or set
+# init.defaultBranch here. Do not use actions/checkout.
+name: precommit
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: precommit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  BUNDLE_PATH: vendor/bundle
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/jruby:10.0
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      # gcc: bundler-audit/rubocop pull prism, which compiles libprism.so on JRuby.
+      # nodejs: actions/upload-artifact@v3. python3: pack semgrep into the tree.
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates build-essential nodejs python3 python3-pip curl tar
+      - run: |
+          token="${GITHUB_TOKEN:-${GITEA_TOKEN:-}}"
+          if [ -z "$token" ]; then echo "missing job token for git fetch" >&2; exit 1; fi
+          host="${GITHUB_SERVER_URL#https://}"
+          host="${host#http://}"
+          git config --global --add safe.directory "$(pwd)"
+          git clone --depth 1 --no-checkout "https://x-access-token:${token}@${host}/${GITHUB_REPOSITORY}" .
+          git fetch --depth 1 origin "${GITHUB_SHA}"
+          git checkout --force FETCH_HEAD
+      - run: |
+          bundle config set --local path vendor/bundle
+          bundle install --jobs 4
+      - run: |
+          mkdir -p .ci/semgrep .ci/bin
+          PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir --target .ci/semgrep semgrep
+          curl -fsSL -o /tmp/gitleaks.tgz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tgz -C .ci/bin gitleaks
+          chmod +x .ci/bin/gitleaks
+          .ci/bin/gitleaks version
+      - run: |
+          tar -czf /tmp/prep-workspace.tar.gz .
+          mv /tmp/prep-workspace.tar.gz prep-workspace.tar.gz
+      - uses: actions/upload-artifact@v3
+        with:
+          name: prep-workspace
+          path: prep-workspace.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  tests:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/jruby:10.0
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: bundle exec ruby handler_test.rb
+
+  sast:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/jruby:10.0
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs python3
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: |
+          export PYTHONPATH="${PWD}/.ci/semgrep${PYTHONPATH:+:$PYTHONPATH}"
+          export PATH="${PWD}/.ci/semgrep/bin:${PWD}/.ci/bin:${PATH}"
+          python3 -m semgrep --config p/ruby --error --metrics=off --exclude vendor --exclude .bundle .
+
+  audit:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/jruby:10.0
+    steps:
+      # git: bundle-audit --update clones ruby-advisory-db. jruby:10.0 has no git.
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs git
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: bundle exec bundle-audit check --update
+
+  gitleaks:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/jruby:10.0
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: |
+          export PATH="${PWD}/.ci/bin:${PATH}"
+          gitleaks detect --source . --verbose --redact
+
+  style:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/jruby:10.0
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: bundle exec rubocop

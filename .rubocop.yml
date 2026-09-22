@@ -1,0 +1,44 @@
+AllCops:
+  TargetRubyVersion: 3.4
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - "vendor/**/*"
+    - ".bundle/**/*"
+
+Layout/LineLength:
+  Max: 120
+
+Metrics:
+  Enabled: false
+
+Style/Documentation:
+  Enabled: false
+
+# Process-wide catalog/cache state must survive CRaC checkpoint/restore.
+Style/GlobalVars:
+  Enabled: false
+
+# Handler tests keep FakeCatalog + FakeDataset next to the cases that use them.
+Style/OneClassPerFile:
+  Enabled: false
+
+# Test scripts mutate a failure counter hash.
+Style/MutableConstant:
+  Enabled: false
+
+Style/HashSyntax:
+  EnforcedShorthandSyntax: either
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+# Checkpoint script references constants so JRuby keeps them in the snapshot.
+Lint/Void:
+  Exclude:
+    - bin/crac_checkpoint.rb
+
+# JDBC array mock must implement getArray.
+Naming/MethodName:
+  AllowedPatterns:
+    - getArray

@@ -4,10 +4,16 @@ require "sinatra"
 require "json"
 require "sequel"
 require "net/http"
+require "socket"
 require "uri"
 
 LISTEN_HOST = "::"
 PUMA_THREADS = Integer(ENV.fetch("PUMA_THREADS", "3"))
+# Net::HTTP defaults to 60s and a dropped catalog SYN follows the kernel
+# retransmit timer. Either one holds Puma's listen in config.ru. A few
+# seconds is enough to notice CMS or Postgres is unreachable and continue.
+CMS_HTTP_TIMEOUT_SEC = 2
+CATALOG_CONNECT_TIMEOUT_SEC = 2
 
 module CatalogCounters
   class << self
@@ -62,8 +68,11 @@ CatalogCounters.reset!
 
 def jdbc_database_url
   url = ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev")
-  return url if url.start_with?("jdbc:")
+  jdbc = url.start_with?("jdbc:") ? url : jdbc_url_from_postgres(url)
+  append_catalog_timeouts(jdbc)
+end
 
+def jdbc_url_from_postgres(url)
   uri = URI.parse(url)
   user = uri.user
   pass = uri.password
@@ -76,8 +85,46 @@ def jdbc_database_url
   params << "password=#{pass}" if pass && user
   params << "ssl=false"
   params << "sslmode=disable"
-  jdbc += "?#{params.join("&")}"
+  "#{jdbc}?#{params.join('&')}"
+end
+
+# PostgreSQL JDBC reads these as seconds. They bound handshake and a stalled
+# read after TCP accept; the Ruby probe below bounds a peer that never answers.
+def append_catalog_timeouts(jdbc)
+  timeout = CATALOG_CONNECT_TIMEOUT_SEC
+  %w[connectTimeout socketTimeout loginTimeout].each do |key|
+    next if jdbc.match?(/[?&]#{Regexp.escape(key)}=/)
+
+    jdbc = "#{jdbc}#{jdbc.include?('?') ? '&' : '?'}#{key}=#{timeout}"
+  end
   jdbc
+end
+
+def catalog_tcp_endpoint
+  raw = ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev")
+  uri = URI.parse(raw.sub(/\Ajdbc:/, ""))
+  [uri.host || "127.0.0.1", (uri.port || 5432).to_i]
+end
+
+def catalog_tcp_reachable!(host, port, timeout)
+  sock = nil
+  addr = Addrinfo.tcp(host, port)
+  sock = Socket.new(addr.afamily, Socket::SOCK_STREAM, 0)
+  result = sock.connect_nonblock(addr, exception: false)
+  return if result.nil? || (result.is_a?(Integer) && result.zero?)
+
+  timed_out = "catalog connect to #{host}:#{port} exceeded #{timeout}s"
+  writable = sock.wait_writable(timeout)
+  raise IO::TimeoutError, timed_out if writable.nil?
+
+  err = sock.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int
+  raise SystemCallError.new("catalog connect to #{host}:#{port} failed", err) unless err.zero?
+ensure
+  begin
+    sock&.close
+  rescue StandardError
+    nil
+  end
 end
 
 def listen_host
@@ -108,7 +155,13 @@ def open_pool
   CatalogCounters.inc_connect
   return CatalogCounters.connect_fn.call if CatalogCounters.connect_fn
 
-  Sequel.connect(jdbc_database_url, max_connections: PUMA_THREADS)
+  host, port = catalog_tcp_endpoint
+  catalog_tcp_reachable!(host, port, CATALOG_CONNECT_TIMEOUT_SEC)
+  Sequel.connect(
+    jdbc_database_url,
+    max_connections: PUMA_THREADS,
+    login_timeout: CATALOG_CONNECT_TIMEOUT_SEC
+  )
 end
 
 # CRaC checkpoint must not freeze a JDBC pool. Open after restore (config.ru)
@@ -250,9 +303,9 @@ end
 
 def year_speakers(year)
   speakers = catalog_db[:v1_speakers]
-    .where(slug: catalog_db[:v1_talks].where(year: year).select(:speaker_slug))
-    .order(:last_name, :first_name)
-    .all
+             .where(slug: catalog_db[:v1_talks].where(year: year).select(:speaker_slug))
+             .order(:last_name, :first_name)
+             .all
   attach_year_tags(speakers, year)
 end
 
@@ -279,18 +332,18 @@ end
 
 def load_talks_for_year(year)
   catalog_db[:v1_talks].where(year: year).order(:speaker_slug, Sequel.desc(:year)).all
-    .group_by { |talk| talk[:speaker_slug] || talk["speaker_slug"] }
+                       .group_by { |talk| talk[:speaker_slug] || talk["speaker_slug"] }
 end
 
 def load_years_for_slugs(slugs)
   return {} if slugs.empty?
 
   rows = catalog_db[:v1_talks]
-    .where(speaker_slug: slugs)
-    .select(:speaker_slug, :year)
-    .distinct
-    .order(:speaker_slug, Sequel.desc(:year))
-    .all
+         .where(speaker_slug: slugs)
+         .select(:speaker_slug, :year)
+         .distinct
+         .order(:speaker_slug, Sequel.desc(:year))
+         .all
   grouped = {}
   rows.each do |row|
     slug = row[:speaker_slug] || row["speaker_slug"]
@@ -335,6 +388,7 @@ def pg_text_array(value)
   when String
     stripped = value.strip
     return [] if stripped.empty? || stripped == "{}"
+
     inner = stripped.start_with?("{") && stripped.end_with?("}") ? stripped[1..-2] : stripped
     inner.split(",").map { |part| part.gsub(/\A"|"\z/, "").strip }.reject(&:empty?)
   else
@@ -350,8 +404,8 @@ def stringify_keys(row)
 end
 
 def register_with_elixir
-  url = ENV["CAROLINA_URL"]
-  token = ENV["POLYGLOT_REGISTER_TOKEN"]
+  url = ENV.fetch("CAROLINA_URL", nil)
+  token = ENV.fetch("POLYGLOT_REGISTER_TOKEN", nil)
   if url.nil? || url.empty? || token.nil? || token.empty?
     CatalogCounters.inc_register_skip
     warn "registration skipped: missing CAROLINA_URL or POLYGLOT_REGISTER_TOKEN"
@@ -371,12 +425,13 @@ def register_with_elixir
     endpoints: ENDPOINTS
   }
 
-  if CatalogCounters.register_http_fn
-    return CatalogCounters.register_http_fn.call(uri, JSON.generate(body))
-  end
+  return CatalogCounters.register_http_fn.call(uri, JSON.generate(body)) if CatalogCounters.register_http_fn
 
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = uri.scheme == "https"
+  http.open_timeout = CMS_HTTP_TIMEOUT_SEC
+  http.read_timeout = CMS_HTTP_TIMEOUT_SEC
+  http.write_timeout = CMS_HTTP_TIMEOUT_SEC
   req = Net::HTTP::Post.new(uri)
   req["Authorization"] = "Bearer #{token}"
   req["Content-Type"] = "application/json"
@@ -405,6 +460,7 @@ def refresh_env_after_restore!
 
   map.each do |key, value|
     next if value.nil?
+
     ENV[key.to_s] = value.to_s
   end
 end

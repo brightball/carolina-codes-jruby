@@ -1,6 +1,10 @@
 [tools]
-java = "21"
-# Install JRuby 10.0 LTS separately if this environment does not provide it:
+java = "27"
+ruby = "3.4.7"
+# Production runtime is JRuby 10.0 LTS on JDK 27. MRI 3.4 is the local
+# toolchain for handler tests, RuboCop, and bundler-audit when JRuby is
+# not installed. Gitea jobs use docker.io/jruby:10.0.
 #   mise install jruby@10.0
 #   mise use jruby@10.0
+
 
