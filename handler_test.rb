@@ -99,6 +99,12 @@ audit_steps = Array(jobs["audit"] && jobs["audit"]["steps"])
 audit_apt = audit_steps.map { |step| step["run"].to_s }.select { |run| run.include?("apt-get") }
 expect(audit_apt.any? { |run| run.match?(/\bgit\b/) },
        "Gitea job audit installs git so bundle-audit --update can clone ruby-advisory-db")
+gitleaks_steps = Array(jobs["gitleaks"] && jobs["gitleaks"]["steps"])
+gitleaks_apt = gitleaks_steps.map { |step| step["run"].to_s }.select { |run| run.include?("apt-get") }
+expect(gitleaks_apt.any? { |run| run.match?(/\bgit\b/) },
+       "Gitea job gitleaks installs git because gitleaks shells out to git")
+expect(!job_runs(jobs["sast"]).include?("python3 -m semgrep"),
+       "Gitea job sast invokes the semgrep launcher, not python3 -m semgrep")
 
 CHECK_IDS.each do |id|
   job = jobs[id]

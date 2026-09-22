@@ -97,9 +97,11 @@ jobs:
           test -n "$archive"
           tar -xzf "$archive"
       - run: |
+          # pip --target writes a semgrep launcher. Running Semgrep as a module
+          # exits 2; the launcher needs PYTHONPATH to import the tree.
           export PYTHONPATH="${PWD}/.ci/semgrep${PYTHONPATH:+:$PYTHONPATH}"
           export PATH="${PWD}/.ci/semgrep/bin:${PWD}/.ci/bin:${PATH}"
-          python3 -m semgrep --config p/ruby --error --metrics=off --exclude vendor --exclude .bundle .
+          semgrep --config p/ruby --error --metrics=off --exclude vendor --exclude .bundle .
 
   audit:
     needs: prepare
@@ -124,7 +126,8 @@ jobs:
     container:
       image: docker.io/jruby:10.0
     steps:
-      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs
+      # git: gitleaks shells out to git. jruby:10.0 does not ship it.
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs git
       - uses: actions/download-artifact@v3
         with:
           name: prep-workspace
