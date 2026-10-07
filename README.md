@@ -11,7 +11,9 @@ This is a sibling of `carolina-codes-ruby`. It speaks the same v1 contract, incl
 
 Queries PostgreSQL **v1 views**. Registers with the Elixir site once on boot.
 
-Requires **JRuby 10.0 LTS** (Ruby 3.4 language level) on **JDK 27**. Puma 8 stays in single/threaded mode (`workers 0`, `PUMA_THREADS` default 3). Do not pass `jruby --dev`.
+Requires **JRuby 10.0 LTS** (Ruby 3.4 language level) and **Sinatra 4.2.1** on **JDK 27**. Catalog access is **Sequel 5.107.0** with **jdbc-postgres 42.7.11** (`Gemfile.lock`). Puma 8 (8.0.2) stays in single/threaded mode (`workers 0`, `PUMA_THREADS` default 3). Do not pass `jruby --dev`. Production startup is **JDK 27 CRaC Warp**.
+
+Accepted decisions are in [DECISIONS.md](DECISIONS.md). Corrections that are easy to miss are in [MEMORY.md](MEMORY.md). Agent instructions are in [AGENTS.md](AGENTS.md).
 
 Production (Fly `auto_stop_machines`) uses Azul Zulu **JDK 27 CRaC** (`zulu27.28.101-ca-crac-jdk27.0.0`, Warp) with JRuby’s CRaC flags, not a cold JVM boot. There is no published `27-jdk-crac` image tag at GA, so the Dockerfile overlays that CRaC tarball on Ubuntu 22.04:
 

@@ -213,6 +213,153 @@ expect(readme.match?(/JDK 27|Java 27/), "README documents JDK 27")
 expect(readme.include?("CRaC"), "README documents CRaC production")
 expect(!readme.include?("21-jdk-crac"), "README does not name 21-jdk-crac")
 
+# --- docs: AGENTS.md, DECISIONS.md, MEMORY.md, README versions ---
+
+def locked_versions(lock_text, name)
+  lock_text.scan(/^\s{4}#{Regexp.escape(name)} \(([^)]+)\)/)
+           .flatten
+           .map { |version| version.sub(/-java\z/, "") }
+           .uniq
+end
+
+agents = read_root("AGENTS.md")
+decisions_path = File.join(ROOT, "DECISIONS.md")
+memory_path = File.join(ROOT, "MEMORY.md")
+expect(File.file?(decisions_path), "DECISIONS.md exists")
+expect(File.file?(memory_path), "MEMORY.md exists")
+decisions = File.read(decisions_path)
+memory = File.read(memory_path)
+lock = read_root("Gemfile.lock")
+
+expect(readme.include?("JRuby 10.0 LTS"), "README names JRuby 10.0 LTS")
+expect(readme.include?("Ruby 3.4"), "README names the Ruby 3.4 language level")
+expect(readme.include?("Sinatra"), "README names Sinatra")
+expect(readme.include?("Warp"), "README names CRaC Warp")
+expect(readme.include?("Puma 8"), "README names Puma 8")
+expect(readme.include?("Sequel"), "README names Sequel")
+expect(readme.include?("jdbc-postgres"), "README names jdbc-postgres")
+%w[sinatra puma sequel jdbc-postgres].each do |gem_name|
+  versions = locked_versions(lock, gem_name)
+  expect(!versions.empty?, "Gemfile.lock pins #{gem_name}")
+  versions.each do |version|
+    expect(readme.include?(version), "README states locked #{gem_name} #{version}")
+  end
+end
+expect(readme.match?(/Sinatra 4\.2\.\d+/), "README states a Sinatra 4.2.x version")
+
+expect(agents.include?("v1_"), "AGENTS.md queries v1_ views")
+expect(agents.include?("Ash"), "AGENTS.md forbids Ash tables")
+expect(agents.include?('"data"'), "AGENTS.md wraps lists in data")
+expect(agents.include?("GET /health"), "AGENTS.md lists GET /health")
+expect(agents.include?("GET /"), "AGENTS.md lists GET /")
+expect(agents.include?("/v1/speakers/:year/:slug"), "AGENTS.md lists the year speaker route")
+expect(agents.include?("/v1/speakers/:slug"), "AGENTS.md lists the speaker slug route")
+expect(agents.include?("/v1/sponsors/:year/:slug"), "AGENTS.md lists the year sponsor route")
+expect(agents.include?("/v1/sponsors/:slug"), "AGENTS.md lists the sponsor slug route")
+expect(agents.include?("POST {CAROLINA_URL}/internal/api-endpoints/register"),
+       "AGENTS.md registers with the CMS route")
+expect(agents.include?("No heartbeat"), "AGENTS.md has no heartbeat")
+expect(agents.match?(/CAROLINA_URL` is unset or the POST fails/),
+       "AGENTS.md keeps serving when register cannot run")
+%w[DATABASE_URL CAROLINA_URL POLYGLOT_REGISTER_TOKEN PUBLIC_BASE_URL PORT].each do |key|
+  expect(agents.include?(key), "AGENTS.md documents #{key}")
+end
+expect(agents.include?("priv/api/openapi.yaml"), "AGENTS.md points at the CMS OpenAPI contract")
+expect(agents.include?("priv/api/AGENTS.md"), "AGENTS.md points at the CMS agent contract")
+expect(agents.include?("own git root"), "AGENTS.md keeps this repo as its own git root")
+expect(agents.include?("Do not fold"), "AGENTS.md does not fold this tree into the CMS remote")
+expect(agents.include?("sibling"), "AGENTS.md does not assume sibling checkouts")
+expect(agents.include?("JRuby 10.0 LTS"), "AGENTS.md names JRuby 10.0 LTS")
+expect(agents.include?("Sinatra"), "AGENTS.md names Sinatra")
+expect(agents.include?("JDK 27"), "AGENTS.md names JDK 27")
+expect(agents.include?("CRaC"), "AGENTS.md names CRaC")
+expect(agents.include?("Warp"), "AGENTS.md names Warp")
+expect(agents.include?("fake catalog"), "AGENTS.md uses a fake catalog for handler tests")
+expect(agents.include?("do not need Postgres"), "AGENTS.md handler tests do not need Postgres")
+%w[test sast audit gitleaks style].each do |gate|
+  expect(agents.include?("make #{gate}"), "AGENTS.md lists make #{gate}")
+end
+expect(agents.include?("pre-commit"), "AGENTS.md runs the gates in pre-commit")
+expect(agents.include?("Gitea"), "AGENTS.md runs the gates in Gitea")
+expect(agents.include?("src/"), "AGENTS.md records that starter src/ is not this repo")
+expect(agents.include?("openapi.yaml"), "AGENTS.md records the starter openapi.yaml layout")
+expect(agents.include?("Postgres 18"), "AGENTS.md records Compose Postgres 18 as starter layout")
+expect(agents.include?("db/*.sql"), "AGENTS.md records starter db/*.sql as not this repo")
+expect(agents.include?("test_catalog.py"), "AGENTS.md records starter test_catalog.py as not this repo")
+expect(agents.include?("DECISIONS.md"), "AGENTS.md names the decision record")
+expect(agents.include?("MEMORY.md"), "AGENTS.md names the agent-memory file")
+expect(agents.include?("durable choice"), "AGENTS.md says to update decisions when a durable choice changes")
+expect(agents.include?("non-obvious correction"),
+       "AGENTS.md says to update memory when a non-obvious correction changes")
+expect(agents.include?("Accepted decisions are binding"), "AGENTS.md treats accepted decisions as binding")
+expect(agents.include?("Do not store secrets"), "AGENTS.md forbids secrets in the decision and memory files")
+
+%w[Status Context Decision Consequences].each do |heading|
+  count = decisions.scan(/^#{heading}:/).size
+  expect(count >= 5, "DECISIONS.md has #{heading} on each record (#{count})")
+end
+decision_topics = [
+  ["JRuby 10.0 LTS", "JRuby 10.0 LTS"],
+  ["Sinatra", "Sinatra"],
+  ["CRaC Warp", "CRaC Warp"],
+  ["JDK 27", "JDK 27"],
+  ["zulu27", "the zulu27 CRaC tarball"],
+  ["27-jdk-crac", "the missing 27-jdk-crac tag"],
+  ["Leyden", "Leyden AOT-only is not the restart path"],
+  ["AOT", "AOT-only is not the restart path"],
+  ["JDK 21", "JDK 21 is not the production target"],
+  ["v1_", "CMS v1_ views"],
+  ["Ash", "Ash tables stay out of the catalog"],
+  ["Postgres 18", "Compose Postgres 18 stays out of this repo"],
+  ["heartbeat", "registration does not heartbeat"],
+  ["internal/api-endpoints/register", "register once on boot"],
+  ["p/ruby", "Semgrep p/ruby"],
+  ["bundler-audit", "bundler-audit"],
+  ["gitleaks", "gitleaks"],
+  ["RuboCop", "RuboCop"],
+  ["Brakeman", "Brakeman is not the SAST gate"],
+  ["dawnscanner", "dawnscanner is not the SAST gate"]
+]
+decision_topics.each do |needle, label|
+  expect(decisions.include?(needle), "DECISIONS.md covers #{label}")
+end
+
+memory_topics = [
+  ["System.getenv", "restore copies System.getenv into ENV"],
+  ["image-build values", "checkpointed ENV stays at image-build values"],
+  ["JDBC pool", "checkpoint must not open a JDBC pool"],
+  ["listen socket", "checkpoint must not open a listen socket"],
+  ["CMS registration", "checkpoint must not register with the CMS"],
+  ["/health", "/health is not a catalog probe"],
+  ["does not read the catalog", "/health does not read the catalog"],
+  ["heap, GC, or `CPUFeatures`", "restore must not re-pass heap, GC, or CPUFeatures"],
+  ["--nocache", "--nocache on checkpoint and restore"],
+  ["CPUFeatures=generic", "CPUFeatures=generic"],
+  ["image builder CPU differs from the Fly VM", "builder CPU differs from the Fly VM"],
+  ["Cold-start Puma", "cold-start Puma if restore fails"],
+  ["must not be named `get` or `post`", "Sinatra test helpers must not be named get or post"],
+  ["MRI can run the fake-catalog tests when JRuby is absent", "MRI can run the fake-catalog tests"]
+]
+memory_topics.each do |needle, label|
+  expect(memory.include?(needle), "MEMORY.md covers #{label}")
+end
+
+doc_texts = {
+  "README.md" => readme,
+  "AGENTS.md" => agents,
+  "DECISIONS.md" => decisions,
+  "MEMORY.md" => memory
+}
+doc_texts.each do |name, text|
+  expect(!text.include?("fly_"), "#{name} has no fly_ token")
+  expect(!text.include?("fo1_"), "#{name} has no fo1_ token")
+  expect(!text.include?("PRIVATE KEY"), "#{name} has no private key")
+  expect(!text.include?(".ts.net"), "#{name} has no Tailscale hostname")
+  text.scan(%r{postgres://[^:\s]+:([^@\s]+)@}).flatten.each do |password|
+    expect(password == "postgres", "#{name} keeps the local dev database password")
+  end
+end
+
 # --- handler tests: real routes, fake catalog ---
 
 JRUBY_VERSION = "10.0.6.0" unless defined?(JRUBY_VERSION)
