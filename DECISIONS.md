@@ -60,6 +60,6 @@ Status: accepted
 
 Context: The CMS language picker allows only a short time for the upstream API. A cold catalog read of the year listings misses that budget, so the picker skips an otherwise healthy process.
 
-Decision: Cache year-scoped speaker and sponsor JSON in process (`cached_listing`) and warm it from `acquire_after_restore!`. Keep at least one Fly machine running (`min_machines_running = 1`).
+Decision: Cache year-scoped speaker and sponsor JSON in process (`cached_listing`) and warm it from `acquire_after_restore!`. Fly `min_machines_running` is 0 so idle machines stop. The CMS keeps the selected API warm.
 
 Consequences: `GET /health` still does not read the catalog. The cache is process-local and short-lived. Boot may log a catalog warmup failure and still serve `/health` and still attempt registration.

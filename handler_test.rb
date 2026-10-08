@@ -206,8 +206,8 @@ expect(rackup.include?("acquire_after_restore!"), "config.ru acquires DB/CMS aft
 expect(!rackup.include?("TCPServer"), "config.ru does not bind the listen port")
 expect(src.include?("def acquire_after_restore!"), "acquire_after_restore! exists")
 expect(src.include?("def refresh_env_after_restore!"), "refresh_env_after_restore! exists")
-expect(fly.match?(/min_machines_running\s*=\s*[1-9]\d*/),
-       "Fly min_machines_running is at least 1")
+expect(fly.match?(/min_machines_running\s*=\s*0\b/),
+       "Fly min_machines_running is 0")
 expect(gemfile.include?('"puma", "~> 8.0"'), "Gemfile pins Puma 8")
 expect(readme.match?(/JDK 27|Java 27/), "README documents JDK 27")
 expect(readme.include?("CRaC"), "README documents CRaC production")
@@ -323,6 +323,15 @@ decision_topics = [
 decision_topics.each do |needle, label|
   expect(decisions.include?(needle), "DECISIONS.md covers #{label}")
 end
+expect(decisions.include?("min_machines_running` is 0"),
+       "DECISIONS.md records scale-to-zero")
+expect(!decisions.match?(/min_machines_running\s*=\s*[1-9]/),
+       "DECISIONS.md does not require a warm machine minimum")
+expect(decisions.include?("cached_listing"), "DECISIONS.md keeps the year-listing cache")
+perf = read_root("perf_test.rb")
+expect(perf.include?("min_machines_running = 0"), "perf_test requires min_machines_running 0")
+expect(!perf.match?(/min_machines_running\s*=\s*[1-9]/),
+       "perf_test does not require a warm machine minimum")
 
 memory_topics = [
   ["System.getenv", "restore copies System.getenv into ENV"],

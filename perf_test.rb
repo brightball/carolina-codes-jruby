@@ -132,8 +132,8 @@ if acq
 end
 expect(src.include?("def warmup_catalog!"), "warmup_catalog! exists")
 expect(src.include?("def cached_listing"), "year listings are cached for the CMS timeout")
-expect(File.read(File.expand_path("fly.toml", __dir__)).include?("min_machines_running = 1"),
-       "Fly keeps one machine up for CMS 200ms budget")
+expect(File.read(File.expand_path("fly.toml", __dir__)).include?("min_machines_running = 0"),
+       "Fly scales to zero when idle")
 
 if RUBY_ENGINE != "jruby"
   warn "skip JRuby runtime checks (RUBY_ENGINE=#{RUBY_ENGINE})"
